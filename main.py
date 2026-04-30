@@ -1,22 +1,25 @@
 import telebot
 import psycopg2
-import quiz  # Импортируем наш модуль с викториной
+import quiz
 
-# --- НАСТРОЙКИ ---
+
+# --- НАСТРОЙКИ ИЗ .ENV ---
 BOT_TOKEN = '8781516451:AAErDnwhPTAi7OHNLOLCTJfTycypYBEOaWc'
-
 DB_NAME = "postgres"
 DB_USER = "bot_user_clean"
 DB_PASSWORD = "918273vip"
 DB_HOST = "localhost"
 DB_PORT = "5432"
+if not BOT_TOKEN or not DB_PASSWORD:
+    print("❌ Ошибка: Не найдены необходимые переменные в файле .env")
+    exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Глобальные словари для состояний и данных
-user_states = {}  # Состояния пользователей (ожидание ввода, обучение)
-temp_words = {}  # Временное хранение слов при добавлении
-temp_quiz = {}  # Временное хранение вопросов викторины
+# Глобальные словари
+user_states = {}
+temp_words = {}
+temp_quiz = {}
 
 
 def get_db_connection():
@@ -30,22 +33,15 @@ def get_db_connection():
 
 
 def show_main_menu(chat_id):
-    """Показывает главное меню с кнопками"""
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-
     btn_add = telebot.types.KeyboardButton("➕ Добавить слово")
     btn_learn = telebot.types.KeyboardButton("📚 Учить слова")
     btn_delete = telebot.types.KeyboardButton("❌ Удалить слово")
-
     markup.add(btn_add, btn_learn)
     markup.add(btn_delete)
-
     bot.send_message(chat_id, "Выбери действие:", reply_markup=markup)
 
 
-# ============================================================================
-# ОБРАБОТЧИК /start
-# ============================================================================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
@@ -71,7 +67,6 @@ def send_welcome(message):
             bot.send_message(message.chat.id, f"Привет, {first_name}! Ты зарегистрирован в базе. 🎉")
         else:
             bot.send_message(message.chat.id, f"С возвращением, {first_name}! 👋")
-
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка при работе с базой: {e}")
     finally:
@@ -81,13 +76,9 @@ def send_welcome(message):
     show_main_menu(message.chat.id)
 
 
-# ============================================================================
-# ДОБАВЛЕНИЕ СЛОВА (КНОПКА)
-# ============================================================================
 @bot.message_handler(func=lambda message: message.text == '➕ Добавить слово')
 def start_add_word(message):
     user_id = message.from_user.id
-
     conn = get_db_connection()
     if not conn:
         bot.send_message(message.chat.id, "Ошибка подключения к базе 😢")
@@ -144,15 +135,13 @@ def process_en_word(message):
             return
 
         user_id_db = result[0]
-
         cur.execute("""
             INSERT INTO user_words (user_id, word_ru, word_en)
             VALUES (%s, %s, %s)
         """, (user_id_db, ru_word, en_word))
-
         conn.commit()
-        bot.send_message(message.chat.id, f"✅ Слово '{ru_word}' -> '{en_word}' добавлено!")
 
+        bot.send_message(message.chat.id, f"✅ Слово '{ru_word}' -> '{en_word}' добавлено!")
         cur.execute("SELECT COUNT(*) FROM user_words WHERE user_id = %s", (user_id_db,))
         count = cur.fetchone()[0]
         bot.send_message(message.chat.id, f"📚 У тебя уже {count} слов.")
@@ -169,9 +158,6 @@ def process_en_word(message):
     show_main_menu(message.chat.id)
 
 
-# ============================================================================
-# ВИКТОРИНА (КНОПКА + МОДУЛЬ QUIZ)
-# ============================================================================
 @bot.message_handler(func=lambda message: message.text == '📚 Учить слова')
 def start_learning(message):
     user_id = message.from_user.id
@@ -194,10 +180,16 @@ def start_learning(message):
         cur.close()
         conn.close()
 
-    correct_en, correct_ru = quiz.start_quiz(bot, chat_id, user_id, get_db_connection)
+    # Получаем разметку вместе с ответами
+    correct_en, correct_ru, markup = quiz.start_quiz(bot, chat_id, user_id, get_db_connection)
 
-    if correct_en and correct_ru:
-        temp_quiz[user_id] = {'correct': correct_en, 'ru': correct_ru}
+    if correct_en and correct_ru and markup:
+        # Сохраняем ВСЁ: правильный ответ, русское слово и клавиатуру
+        temp_quiz[user_id] = {
+            'correct': correct_en,
+            'ru': correct_ru,
+            'markup': markup # <-- Сохраняем клавиатуру!
+        }
         user_states[user_id] = 'learning'
     else:
         show_main_menu(chat_id)
@@ -217,22 +209,31 @@ def check_quiz_answer(message):
 
     correct_answer = temp_quiz[user_id]['correct']
     ru_word = temp_quiz[user_id]['ru']
+    saved_markup = temp_quiz[user_id]['markup']  # Берем сохраненную клавиатуру
 
-    result_message = quiz.check_answer(user_answer, correct_answer, ru_word)
+    if user_answer.lower() == correct_answer.lower():
+        # --- ПРАВИЛЬНО ---
+        result_message = f"✅ Отлично! {correct_answer} — это {ru_word}. ❤️"
 
-    markup = telebot.types.ReplyKeyboardRemove()
-    bot.send_message(message.chat.id, result_message, reply_markup=markup)
+        del user_states[user_id]
+        if user_id in temp_quiz:
+            del temp_quiz[user_id]
 
-    del user_states[user_id]
-    if user_id in temp_quiz:
-        del temp_quiz[user_id]
+        bot.send_message(message.chat.id, result_message, reply_markup=telebot.types.ReplyKeyboardRemove())
+        show_main_menu(message.chat.id)
 
-    show_main_menu(message.chat.id)
+    else:
+        # --- НЕПРАВИЛЬНО ---
+        # НЕ удаляем состояние и НЕ удаляем temp_quiz!
+
+        bot.send_message(
+            message.chat.id,
+            f"❌ Не совсем. Попробуй еще раз!",
+            reply_markup=saved_markup  # <-- Возвращаем те же самые кнопки!
+        )
+        # Состояние 'learning' остается активным. Следующий клик по кнопке снова попадет сюда.
 
 
-# ============================================================================
-# УДАЛЕНИЕ СЛОВА (КНОПКА)
-# ============================================================================
 @bot.message_handler(func=lambda message: message.text == '❌ Удалить слово')
 def start_delete_word(message):
     user_id = message.from_user.id
@@ -257,7 +258,6 @@ def start_delete_word(message):
             FROM user_words 
             WHERE user_id = (SELECT id FROM users WHERE telegram_id = %s)
         """, (user_id,))
-
         words = cur.fetchall()
 
         if not words:
@@ -305,7 +305,6 @@ def delete_word_callback(call):
             WHERE id = %s AND user_id = (SELECT id FROM users WHERE telegram_id = %s)
             RETURNING word_ru, word_en
         """, (word_id, user_id))
-
         deleted_word = cur.fetchone()
         conn.commit()
 
@@ -318,6 +317,12 @@ def delete_word_callback(call):
                 text=f"✅ Слово '{ru}' → '{en}' удалено.",
                 reply_markup=None
             )
+
+            # FIX: Показываем обновленное количество слов
+            cur.execute("SELECT COUNT(*) FROM user_words WHERE user_id = (SELECT id FROM users WHERE telegram_id = %s)",
+                        (user_id,))
+            count = cur.fetchone()[0]
+            bot.send_message(call.message.chat.id, f"📚 У тебя осталось {count} слов.")
         else:
             bot.answer_callback_query(call.id, text="Слово не найдено.")
 
@@ -331,7 +336,6 @@ def delete_word_callback(call):
     show_main_menu(call.message.chat.id)
 
 
-# === ЗАПУСК БОТА ===
 if __name__ == '__main__':
     print("Бот запущен...")
     bot.infinity_polling()
