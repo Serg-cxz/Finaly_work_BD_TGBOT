@@ -1,15 +1,20 @@
 import telebot
 import psycopg2
+import os  # ← Добавь это!
+from dotenv import load_dotenv  # ← Добавь это!
 import quiz
 
+# Загружаем переменные из файла .env
+load_dotenv()
 
 # --- НАСТРОЙКИ ИЗ .ENV ---
-BOT_TOKEN = '8781516451:AAErDnwhPTAi7OHNLOLCTJfTycypYBEOaWc'
-DB_NAME = "postgres"
-DB_USER = "bot_user_clean"
-DB_PASSWORD = "918273vip"
-DB_HOST = "localhost"
-DB_PORT = "5432"
+BOT_TOKEN = os.getenv('BOT_TOKEN')  # ← Читаем из .env!
+DB_NAME = os.getenv('DB_NAME', 'postgres')
+DB_USER = os.getenv('DB_USER', 'postgres')
+DB_PASSWORD = os.getenv('DB_PASSWORD')  # ← Читаем из .env!
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = int(os.getenv('DB_PORT', 5432))
+
 if not BOT_TOKEN or not DB_PASSWORD:
     print("❌ Ошибка: Не найдены необходимые переменные в файле .env")
     exit(1)
